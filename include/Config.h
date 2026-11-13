@@ -37,3 +37,10 @@ struct Command {
 const Command* findCommand(const String& name);
 void serviceNvs();
 void markDirty();    // for setters
+
+// Report lines to the host (host_cycle, host_bright, host_auto_bright), and all
+// four including host_face. The host records them and never answers them.
+void reportCycle();
+void reportBright();
+void reportAutoBright();
+void sendReport();

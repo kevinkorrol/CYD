@@ -5,6 +5,7 @@
 #include "FaceRenderer.h"
 #include "MenuApp.h"
 #include <TFT_eSPI.h>
+#include "DisplayInit.h"
 
 extern TFT_eSPI tft;
 
@@ -36,6 +37,9 @@ void initUI() {
 void serviceUI() {
     TouchEvent ev;
     bool gotEvent = pollTouchEvent(ev);
+    // screen:off — keep polling so the press state stays current, but ignore it.
+    // The menu was closed when the screen went off.
+    if (!isScreenOn()) return;
 
     // Enter menu on long-press from face (one-way)
     if (gotEvent && ev.kind == TOUCH_LONG_PRESS && _mode == MODE_FACE) {

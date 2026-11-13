@@ -11,6 +11,12 @@ static const int BL_PIN = 21;
 static const int BL_LEDC_CHANNEL = 0;
 
 TFT_eSPI tft = TFT_eSPI();
+static bool _screenOn = true;   // not saved: the screen always boots on
+
+void writeBacklight(uint8_t pct) {
+    if (pct > 100) pct = 100;
+    ledcWrite(BL_LEDC_CHANNEL, _screenOn ? (pct * 255) / 100 : 0);
+}
 
 void initDisplay()
 {
@@ -28,12 +34,18 @@ void initDisplay()
 
 void setBacklight(uint8_t pct) {
     if (pct > 100) pct = 100;
-    uint8_t duty = (pct * 255) / 100;
-    ledcWrite(BL_LEDC_CHANNEL, duty);
     config.brightness = pct;
+    writeBacklight(pct);
 }
 
 void reattachBacklight() {
     ledcAttachPin(BL_PIN, BL_LEDC_CHANNEL);
     setBacklight(config.brightness);
 }
+
+void setScreenOn(bool on) {
+    _screenOn = on;
+    writeBacklight(config.brightness);
+}
+
+bool isScreenOn() { return _screenOn; }

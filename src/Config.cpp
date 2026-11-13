@@ -8,6 +8,7 @@
 #include <TFT_eSPI.h>
 #include "LdrSensor.h"
 #include "UIManager.h"
+#include "MenuApp.h"
 
 extern TFT_eSPI tft;
 
@@ -116,14 +117,15 @@ static bool parseFaceShape(const String &v, FaceShape &out) {
     return true;
 }
 
-static const char *KNOWN_MOODS[] = {
-    "NEUTRAL", "HAPPY", "ANGRY", "SAD", "EXCITED",
-    "ANNOYED", "QUESTIONING", "IDLE1", "IDLE2", "IDLE3"
-};
-
-static bool isKnownMood(const String &m) {
-    for (auto p : KNOWN_MOODS) if (m == p) return true;
-    return false;
+// ============ Report lines (screen -> host) ============
+void reportCycle()      { Serial.printf("host_cycle:%s\n", config.moodAutoCycle ? "on" : "off"); }
+void reportBright()     { Serial.printf("host_bright:%u\n", config.brightness); }
+void reportAutoBright() { Serial.printf("host_auto_bright:%s\n", config.autoBright ? "on" : "off"); }
+void sendReport() {
+    reportFace();
+    reportCycle();
+    reportBright();
+    reportAutoBright();
 }
 
 // ============ Setter handlers ============
@@ -135,7 +137,7 @@ static void cmdSetTouchDebug(const String &val) {
 static void cmdSetMoodCycle(const String &val) {
     bool b;
     if (!parseBool(val, b)) { Serial.println("ERR: bad bool"); return; }
-    config.moodAutoCycle = b; markDirty(); Serial.println("OK");
+    config.moodAutoCycle = b; markDirty(); reportCycle(); Serial.println("OK");
 }
 static void cmdSetIdleAnim(const String& val) {
     bool b;
@@ -172,30 +174,77 @@ static void cmdSetTheme(const String& val) {
 }
 static void cmdSetMood(const String &val) {
     String upper = val; upper.toUpperCase();
-    if (!isKnownMood(upper)) { Serial.printf("ERR: unknown mood '%s'\n", val.c_str()); return; }
-    setMood(upper.c_str()); markDirty(); Serial.println("OK");
+    if (!isKnownMood(upper.c_str())) { Serial.printf("ERR: unknown mood '%s'\n", val.c_str()); return; }
+    setMood(upper.c_str()); markDirty(); Serial.println("OK");   // setMood reports
 }
 static void cmdSetBright(const String &val) {
     int v = val.toInt();
     if (v < 1 || v > 100) { Serial.println("ERR: 1-100"); return; }
+    bool wasAuto = config.autoBright;
     config.autoBright = false;
-    setBacklight((uint8_t)v); markDirty(); Serial.println("OK");
+    setBacklight((uint8_t)v); markDirty();
+    showBrightSlider((uint8_t)v);   // slider follows; guarded, so no echo
+    reportBright();
+    if (wasAuto) { refreshBrightIcon(); reportAutoBright(); }
+    Serial.println("OK");
 }
 
 static void cmdSetAutoBright(const String &val) {
     bool b;
     if (!parseBool(val, b)) { Serial.println("ERR: bad bool"); return; }
     config.autoBright = b; markDirty();
+    if (!b) setBacklight(config.brightness);   // back to the manual setting
+    refreshBrightIcon();
+    reportAutoBright();
     Serial.println(b ? "OK: auto on" : "OK: auto off");
 }
+
+// ============ Host-owned state: display only, never saved, never echoed ============
+// vol, mute and mic_mute mirror what the host decided. No host_* line goes back,
+// or host and screen would chase each other.
+static void cmdSetVol(const String &val) {
+    String t = val; t.trim();
+    int v = t.toInt();
+    if (t.length() == 0 || (v == 0 && t != "0") || v < 0 || v > 100) { Serial.println("ERR: 0-100"); return; }
+    showVolume((int16_t)v); Serial.println("OK");
+}
+static void cmdGetVol() { Serial.printf("vol:            %d\n", shownVolume()); }
+static void cmdSetMute(const String &val) {
+    bool b;
+    if (!parseBool(val, b)) { Serial.println("ERR: bad bool"); return; }
+    showMute(b); Serial.println("OK");
+}
+static void cmdGetMute() { Serial.printf("mute:           %s\n", shownMute() ? "on" : "off"); }
+static void cmdSetMicMute(const String &val) {
+    bool b;
+    if (!parseBool(val, b)) { Serial.println("ERR: bad bool"); return; }
+    showMicMute(b); Serial.println("OK");
+}
+static void cmdGetMicMute() { Serial.printf("mic_mute:       %s\n", shownMicMute() ? "on" : "off"); }
+
+// ============ Screen power: not saved, the screen always boots on ============
+static void cmdSetScreen(const String &val) {
+    bool on;
+    if (!parseBool(val, on)) { Serial.println("ERR: on|off"); return; }
+    if (on) {
+        setScreenOn(true);    // saved brightness back
+        resumeFace();
+    } else {
+        if (getUIMode() == MODE_MENU) setUIMode(MODE_FACE);   // close the menu
+        pauseFace();
+        setScreenOn(false);   // PWM 0; serviceLdr and touch hold off while dark
+    }
+    Serial.println("OK");
+}
+static void cmdGetScreen() { Serial.printf("screen:         %s\n", isScreenOn() ? "on" : "off"); }
 static void cmdSetBrightLight(const String &val) {
     int v = val.toInt();
-    if (v < 0 || v > 100) { Serial.println("ERR: 0-100"); return; }
+    if (v < 1 || v > 100) { Serial.println("ERR: 1-100"); return; }
     config.brightLight = (uint8_t)v; markDirty(); Serial.println("OK");
 }
 static void cmdSetBrightDark(const String &val) {
     int v = val.toInt();
-    if (v < 0 || v > 100) { Serial.println("ERR: 0-100"); return; }
+    if (v < 1 || v > 100) { Serial.println("ERR: 1-100"); return; }
     config.brightDark = (uint8_t)v; markDirty(); Serial.println("OK");
 }
 static void cmdSetMenuTimeout(const String& val) {
@@ -212,7 +261,10 @@ static void cmdGetTheme() {
 static void cmdSetMode(const String& val) {
     String u = val; u.toUpperCase();
     if (u == "FACE")      { setUIMode(MODE_FACE); Serial.println("OK"); }
-    else if (u == "MENU") { setUIMode(MODE_MENU); Serial.println("OK"); }
+    else if (u == "MENU") {
+        if (!isScreenOn()) { Serial.println("ERR: screen is off"); return; }   // stay in FACE
+        setUIMode(MODE_MENU); Serial.println("OK");
+    }
     else                  { Serial.println("ERR: FACE|MENU"); }
 }
 
@@ -249,7 +301,7 @@ static void cmdSetTap(const String &val) {
 static void cmdSetFace(const String &val) {
     FaceShape s;
     if (!parseFaceShape(val, s)) { Serial.println("ERR: bad face (need topH,botH,tilt,pR,r as floats)"); return; }
-    setFaceCustom(s); Serial.println("OK");
+    setFaceCustom(s); Serial.println("OK");   // reports host_face:CUSTOM
 }
 static void cmdSetFaceL(const String &val) {
     FaceShape s;
@@ -333,6 +385,7 @@ static void cmdGetLux()     { Serial.printf("lux: %u\n",   getLdrLuxish()); }
 static void cmdSplash()     { showSplash(); Serial.println("OK"); }
 static void cmdPause()      { pauseFace();  Serial.println("OK: face paused"); }
 static void cmdResume()     { resumeFace(); Serial.println("OK: face resumed"); }
+static void cmdReport()     { sendReport(); Serial.println("OK"); }
 
 // Forward decls for cmds that iterate the table
 static void cmdHelp();
@@ -357,7 +410,7 @@ static const Command commands[] = {
     {"bg_color",     cmdSetBgColour,    cmdGetBgColour,    nullptr},   // alias, hidden
     {"idle_anim",    cmdSetIdleAnim,    cmdGetIdleAnim,    "on|off random idle moods"},
     {"theme",        cmdSetTheme,       cmdGetTheme,       "light | dark (preset bg+eye; use bg_colour/eye_colour for arbitrary)"},
-    {"auto_bright",  cmdSetAutoBright,  cmdGetAutoBright,  "on|off LDR-driven brightness"},
+    {"auto_bright",  cmdSetAutoBright,  cmdGetAutoBright,  "on|off LDR-driven brightness (bright keeps the manual setting)"},
     {"bright_light", cmdSetBrightLight, cmdGetBrightLight, "1-100 target % when bright"},
     {"bright_dark",  cmdSetBrightDark,  cmdGetBrightDark,  "1-100 target % when dark"},
     {"menu_timeout", cmdSetMenuTimeout, cmdGetMenuTimeout, "0-300 seconds (0=disabled)"},
@@ -366,7 +419,11 @@ static const Command commands[] = {
     {"face",         cmdSetFace,        cmdGetFace,        "topH,botH,tilt,pR,r — symmetric custom mood (floats)"},
     {"face_l",       cmdSetFaceL,       cmdGetFaceL,       "topH,botH,tilt,pR,r — left eye only"},
     {"face_r",       cmdSetFaceR,       cmdGetFaceR,       "topH,botH,tilt,pR,r — right eye only"},
-    {"mode",         cmdSetMode,        cmdGetMode,        "FACE|MENU"},
+    {"mode",         cmdSetMode,        cmdGetMode,        "FACE|MENU (MENU refused while screen:off)"},
+    {"vol",          cmdSetVol,         cmdGetVol,         "0-100 host volume, display only (host owns the mixer)"},
+    {"mute",         cmdSetMute,        cmdGetMute,        "on|off host speaker mute, display only"},
+    {"mic_mute",     cmdSetMicMute,     cmdGetMicMute,     "on|off host mic mute (on = muted), display only"},
+    {"screen",       cmdSetScreen,      cmdGetScreen,      "on|off backlight + face + touch (not saved; boots on)"},
 
     // Set-only commands
     {"led",          cmdSetLed,         nullptr,           "off|on|red|green|blue|white|yellow|cyan|magenta or r,g,b"},
@@ -378,7 +435,8 @@ static const Command commands[] = {
     {"help",         nullptr,           cmdHelp,           "this message"},
     {"status",       nullptr,           cmdStatus,         "print current config"},
     {"version",      nullptr,           cmdGetVersion,     "firmware version"},
-    {"blink",        nullptr,           cmdBlink,          "trigger one blink"},
+    {"blink",        nullptr,           cmdBlink,          "blink now"},
+    {"report",       nullptr,           cmdReport,         "send host_face/cycle/bright/auto_bright lines"},
     {"ldr",          nullptr,           cmdLdr,            "light sensor reading"},
     {"light",        nullptr,           cmdGetLight,       "ambient brightness 0-100%"},
     {"lux",          nullptr,           cmdGetLux,         "inverted ldr (higher=brighter)"},
@@ -388,8 +446,8 @@ static const Command commands[] = {
     {"resume",       nullptr,           cmdResume,         "resume face renderer"},
     {"reboot",       nullptr,           cmdReboot,         "soft reboot (config preserved)"},
     {"reset",        nullptr,           cmdReset,          "clear NVS, reboot to defaults"},
-    {"mood",         cmdSetMood,        cmdGetMood,        "NEUTRAL|HAPPY|ANGRY|SAD|EXCITED|ANNOYED|QUESTIONING|IDLE1-3",       fmtMood},
-    {"bright",       cmdSetBright,      cmdGetBright,      "0-100 backlight %",                                                 fmtBright},
+    {"mood",         cmdSetMood,        cmdGetMood,        "NEUTRAL|HAPPY|ANGRY|SAD|EXCITED|ANNOYED|QUESTIONING|IDLE1-3 (saved)", fmtMood},
+    {"bright",       cmdSetBright,      cmdGetBright,      "1-100 backlight % (saved)",                                         fmtBright},
     {"uptime",       nullptr,           cmdUptime,         "time since boot",                                                   fmtUptime},
     {"mem",          nullptr,           cmdMem,            "memory snapshot",                                                   fmtMem},
 };

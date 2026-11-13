@@ -14,3 +14,22 @@ extern void initMenuIcons();
 static const int16_t MENU_PG_ROOT = 0;   // E_PG_MAIN
 
 extern void refreshStatsText();
+
+// Host-owned audio state, shown on the menu only. Never saved, never echoed back
+// as host_* lines (see Config.cpp's vol / mute / mic_mute commands).
+void    showVolume(int16_t v);
+int16_t shownVolume();
+void    showMute(bool on);
+bool    shownMute();
+void    showMicMute(bool on);
+bool    shownMicMute();
+
+// Moves the brightness slider from code (boot, bright:). Guarded: no auto-off,
+// no save, no host_bright.
+void    showBrightSlider(uint8_t pct);
+
+// Redraws the menu's brightness icon from config.autoBright. Call wherever it changes.
+void    refreshBrightIcon();
+
+// Sends the slider values a throttle held back. Call once per loop().
+void    serviceSliderSends();
