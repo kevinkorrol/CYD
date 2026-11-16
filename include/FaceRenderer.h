@@ -10,10 +10,16 @@ void serviceFaceRenderer();   // call every loop()
 void setEyeColour(uint16_t rgb565);
 void setBackgroundColour(uint16_t rgb565);
 void drawTouchMarker(int x, int y);
-void setMood(const char *moodName);
+void setMood(const char *moodName);   // saves config.mood and shows it
+
+// The named faces, in cycling order.
+static constexpr int FACE_MOOD_COUNT = 10;
+extern const char *const FACE_MOODS[FACE_MOOD_COUNT];
+bool isKnownMood(const char *name);
+void reportFace();   // prints host_face:<the face on screen, a name or CUSTOM>
 void setLookAt(int16_t x, int16_t y);
 void getLookAt(int16_t &x, int16_t &y);
-void triggerBlink();
+void triggerBlink();   // blinks on the next frame
 void setHud(bool on);
 
 struct FaceShape { float topH, botH, tilt, pR, radius; };

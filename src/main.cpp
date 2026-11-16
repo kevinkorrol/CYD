@@ -38,6 +38,8 @@ void setup() {
     initUI(); // _mode = FACE
     setupLed();
     Serial.println("RSC ready");
+    Serial.println("host_ready");   // tells the host the screen (re)started
+    sendReport();
 }
 
 void loop() {
@@ -45,6 +47,7 @@ void loop() {
     serviceNvs();
     if (getUIMode() == MODE_FACE) serviceFaceRenderer();
     serviceUI();              // mode-orchestrates GUIslice + long-press
+    serviceSliderSends();     // trailing host_vol / host_bright after a drag
     serviceDebugOverlay();
     serviceLdr();
 }

@@ -75,13 +75,90 @@ static void refreshVolumeIcon() {
     applyIcon(_refVolume, iconArr);
 }
 
+// ---- Host-owned audio state: display only (vol / mute / mic_mute commands) ----
+// gslc_ElemXSliderSetPos() calls CbSlidePos() whenever the position changes
+// (GUIslice XSlider.c), so a host-set volume would come straight back as
+// host_vol and the two would chase each other. _settingVolume blocks that.
+static bool _settingVolume = false;
+// Same for the brightness slider: a move from code must not turn auto-brightness
+// off, save, or send host_bright.
+static bool _settingBright = false;
+
+void showVolume(int16_t v) {
+    _volumeLevel = v;
+    if (m_pElemSlider2) {
+        _settingVolume = true;
+        gslc_ElemXSliderSetPos(&m_gui, m_pElemSlider2, 100 - v);   // top = 100
+        _settingVolume = false;
+    }
+    refreshVolumeIcon();
+}
+int16_t shownVolume() { return _volumeLevel; }
+
+void showBrightSlider(uint8_t pct) {
+    if (!m_pElemSlider2_3) return;
+    _settingBright = true;
+    gslc_ElemXSliderSetPos(&m_gui, m_pElemSlider2_3, 100 - pct);   // top = 100
+    _settingBright = false;
+}
+
+void refreshBrightIcon() {
+    applyIcon(_refBright, config.autoBright ? auto_bright_40x40px : bright_40x40px);
+}
+
+void showMute(bool on) { _muted = on; refreshVolumeIcon(); }
+bool shownMute() { return _muted; }
+
+void showMicMute(bool on) {
+    _micMuted = on;
+    applyIcon(_refMic, _micMuted ? mute_on_icon_40x40px : mic_on_icon_40x40px);
+}
+bool shownMicMute() { return _micMuted; }
+
+// ---- Slider sends: at most one line per 100 ms while dragging, and the last
+// value always goes out (a trailing send from serviceSliderSends()). ----
+struct ThrottledSend {
+    const char *key;
+    uint32_t    lastMs;
+    int16_t     pending;
+    bool        hasPending;
+};
+static const uint32_t SLIDER_SEND_MS = 100;
+static ThrottledSend _volSend    = {"host_vol",    0, 0, false};
+static ThrottledSend _brightSend = {"host_bright", 0, 0, false};
+
+static void throttledSend(ThrottledSend &t, int16_t v) {
+    if (millis() - t.lastMs >= SLIDER_SEND_MS) {
+        Serial.printf("%s:%d\n", t.key, v);
+        t.lastMs = millis();
+        t.hasPending = false;
+    } else {
+        t.pending = v;
+        t.hasPending = true;
+    }
+}
+
+static void flushThrottled(ThrottledSend &t) {
+    if (t.hasPending && millis() - t.lastMs >= SLIDER_SEND_MS) {
+        Serial.printf("%s:%d\n", t.key, t.pending);
+        t.lastMs = millis();
+        t.hasPending = false;
+    }
+}
+
+void serviceSliderSends() {
+    flushThrottled(_volSend);
+    flushThrottled(_brightSend);
+}
+
 void initMenuIcons() {
   _refVolume = gslc_PageFindElemById(&m_gui, E_PG_MAIN, E_ELEM_IMAGEBTN_VOLUME);
   _refMic    = gslc_PageFindElemById(&m_gui, E_PG_MAIN, E_ELEM_IMAGEBTN_MIC);
   _refBright = gslc_PageFindElemById(&m_gui, E_PG_MAIN, E_ELEM_IMAGEBTN_BRIGHTNESS);
-  refreshVolumeIcon();
+  showVolume(_volumeLevel);              // sliders start where the values are,
+  showBrightSlider(config.brightness);   // not at the Builder's default (top)
   applyIcon(_refMic, mic_on_icon_40x40px);
-  applyIcon(_refBright, config.autoBright ? auto_bright_40x40px : bright_40x40px);
+  refreshBrightIcon();
   // Programmatically add two more stats lines on the burger menu page
   _refStatsUp = gslc_ElemCreateTxt(&m_gui, GSLC_ID_AUTO, E_PG_BURGER_MENU,
       (gslc_tsRect){20, 110, 240, 30}, _bufStatsUp, sizeof(_bufStatsUp), E_BUILTIN10X16);
@@ -159,8 +236,7 @@ bool CbBtnCommon(void* pvGui,void *pvElemRef,gslc_teTouch eTouch,int16_t nX,int1
 
       case E_ELEM_IMAGEBTN_BRIGHTNESS: {
         const Command* cmd = findCommand(String("auto_bright"));
-        if (cmd && cmd->set) cmd->set(config.autoBright ? "off" : "on");
-        applyIcon(_refBright, config.autoBright ? auto_bright_40x40px : bright_40x40px);
+        if (cmd && cmd->set) cmd->set(config.autoBright ? "off" : "on");   // refreshes the icon
         break;
       }
       case E_ELEM_IMAGEBTN5:    // RSC logo — returns to face per UI design
@@ -254,28 +330,23 @@ bool CbSlidePos(void* pvGui,void* pvElemRef,int16_t nPos)
   // From the element's ID we can determine which slider was updated.
   switch (pElem->nId) {
 //<Slider Enums !Start!>
-    case E_ELEM_SLIDER2: {  // volume — invert + throttle
+    case E_ELEM_SLIDER2: {  // volume — invert + throttle with trailing send
       int16_t v = 100 - nPos;   // top = 100, bottom = 0
       _volumeLevel = v;
-      static uint32_t _lastVolSendMs = 0;
-      if (millis() - _lastVolSendMs >= 100) {
-          Serial.printf("host_vol:%d\n", v);
-          _lastVolSendMs = millis();
-      }
+      if (!_settingVolume) throttledSend(_volSend, v);   // no echo of vol:NN
       if (!_muted) refreshVolumeIcon();
       break;
     }
-    case E_ELEM_SLIDER3: {  // brightness — invert
+    case E_ELEM_SLIDER3: {  // brightness — invert; reports host_bright, throttled
+      if (_settingBright) break;   // moved from code: no auto-off, save or send
       int16_t pos = 100 - nPos;
       int16_t v = (pos < 1) ? 1 : pos;
+      bool wasAuto = config.autoBright;
       config.autoBright = false;
       setBacklight((uint8_t)v);
       markDirty();
-      static uint32_t _lastBrightSendMs = 0;
-      if (millis() - _lastBrightSendMs >= 100) {
-          Serial.printf("bright:%d\n", v);
-          _lastBrightSendMs = millis();
-      }
+      if (wasAuto) { refreshBrightIcon(); reportAutoBright(); }
+      throttledSend(_brightSend, v);
       break;
     }
 

@@ -16,12 +16,59 @@ static uint32_t _splashUntil = 0;             // 0 = inactive; else millis() at 
 static constexpr uint32_t SPLASH_DURATION_MS = 800;
 static bool _paused = false;
 
-// Internal helper — (re)builds the eyes with current colour state.
+// The named faces, in the eye library's cycling order (Grobot_Animations v0.1.3).
+const char *const FACE_MOODS[FACE_MOOD_COUNT] = {
+    "NEUTRAL", "HAPPY", "ANGRY", "SAD", "EXCITED",
+    "ANNOYED", "QUESTIONING", "IDLE1", "IDLE2", "IDLE3"
+};
+static const char *FACE_CUSTOM = "CUSTOM";
+
+bool isKnownMood(const char *name)
+{
+    for (auto m : FACE_MOODS) if (strcmp(name, m) == 0) return true;
+    return false;
+}
+
+// The face on screen: a FACE_MOODS name or "CUSTOM". Separate from config.mood,
+// the saved setting, which only the mood: command changes.
+static char _shownMood[16] = "NEUTRAL";
+
+// Cycling, done here rather than in the library's moodSwitch() so each face is
+// reported. Same order, timing and random look as moodSwitch() in v0.1.3.
+static int      _cycleIndex     = 0;
+static uint32_t _lastCycleMs    = 0;
+static uint32_t _cycleInterval  = 5000;
+
+// Applies the shown face to the eyes without reporting it.
+static void applyShownFace()
+{
+    if (!_eyes) return;
+    if (strcmp(_shownMood, FACE_CUSTOM) == 0) {
+        _eyes->setEmotion(MoodData{_customL.topH, _customL.botH, _customL.tilt, _customL.pR, _customL.radius},
+                          MoodData{_customR.topH, _customR.botH, _customR.tilt, _customR.pR, _customR.radius});
+    } else {
+        _eyes->setEmotion(String(_shownMood));
+    }
+}
+
+// Changes the face shown and reports it.
+static void showFace(const char *name)
+{
+    strncpy(_shownMood, name, sizeof(_shownMood) - 1);
+    _shownMood[sizeof(_shownMood) - 1] = '\0';
+    applyShownFace();
+    reportFace();
+}
+
+void reportFace() { Serial.printf("host_face:%s\n", _shownMood); }
+
+// Internal helper — (re)builds the eyes with current colour state, keeping the
+// face shown.
 static void rebuildEyes()
 {
     if (_eyes) { delete _eyes; _eyes = nullptr; }
     _eyes = new GrobotEyes(config.eyeColour, config.bgColour);
-    _eyes->setEmotion(String(config.mood));
+    applyShownFace();
 }
 
 void initFaceRenderer(TFT_eSPI *tft)
@@ -37,6 +84,10 @@ void initFaceRenderer(TFT_eSPI *tft)
     }
     _canvas->fillSprite(config.bgColour);
 
+    if (isKnownMood(config.mood)) {
+        strncpy(_shownMood, config.mood, sizeof(_shownMood) - 1);
+        _shownMood[sizeof(_shownMood) - 1] = '\0';
+    }
     rebuildEyes();
     _hudOn = config.hudOn;
 }
@@ -63,20 +114,28 @@ void serviceFaceRenderer()
         _tft->fillScreen(config.bgColour);       // splash done, clear before face takes over
         _splashUntil = 0;
     }
+    // Nothing changes the face while it is paused (menu, pause, screen:off), so
+    // nothing is reported for a face nobody can see.
+    if (_paused) return;
     if (config.idleAnim && !config.moodAutoCycle) {
     uint32_t now = millis();
     if (_nextIdleSwitch == 0) {
         _nextIdleSwitch = now + 5000 + (esp_random() % 10000);
     } else if (now >= _nextIdleSwitch) {
         static const char* idles[] = {"IDLE1", "IDLE2", "IDLE3"};
-        setMood(idles[esp_random() % 3]);
+        showFace(idles[esp_random() % 3]);   // shown only; the saved mood stays
         _nextIdleSwitch = now + 5000 + (esp_random() % 10000);
     }
     } else {
         _nextIdleSwitch = 0;
     }
-    if (_paused) return;
-    if (config.moodAutoCycle) _eyes->moodSwitch(true);
+    if (config.moodAutoCycle && millis() - _lastCycleMs > _cycleInterval) {
+        _cycleIndex = (_cycleIndex + 1) % FACE_MOOD_COUNT;
+        showFace(FACE_MOODS[_cycleIndex]);
+        setLookAt(random(-30, 31), random(-20, 21));
+        _lastCycleMs = millis();
+        _cycleInterval = random(5000, 8000);
+    }
     _eyes->renderEmotions(*_canvas);
     if (_hudOn) _eyes->HUD(*_tft);
     
@@ -107,30 +166,26 @@ void setMood(const char *moodName)
 {
     strncpy(config.mood, moodName, sizeof(config.mood) - 1);
     config.mood[sizeof(config.mood) - 1] = '\0';
-    if (_eyes) _eyes->setEmotion(String(moodName));
+    showFace(config.mood);
 }
 
 void setLookAt(int16_t x, int16_t y) { if (!_eyes) return; _lookX = x; _lookY = y; _eyes->lookAt(x, y); }
 void getLookAt(int16_t &x, int16_t &y) { x = _lookX; y = _lookY; }
-void triggerBlink() { if (_eyes) _eyes->blink(); }
+void triggerBlink() { if (_eyes) _eyes->blinkNow(); }
 void setHud(bool on) { _hudOn = on; }
-
-static MoodData toMood(const FaceShape &s) {
-    return MoodData{s.topH, s.botH, s.tilt, s.pR, s.radius};
-}
 
 void setFaceCustom(const FaceShape &shape) {
     _customL = shape;
     _customR = shape;
-    if (_eyes) _eyes->setEmotion(toMood(shape));
+    showFace(FACE_CUSTOM);
 }
 void setFaceLeft(const FaceShape &shape) {
     _customL = shape;
-    if (_eyes) _eyes->setEmotion(toMood(_customL), toMood(_customR));
+    showFace(FACE_CUSTOM);
 }
 void setFaceRight(const FaceShape &shape) {
     _customR = shape;
-    if (_eyes) _eyes->setEmotion(toMood(_customL), toMood(_customR));
+    showFace(FACE_CUSTOM);
 }
 void getFaceLeft (FaceShape &out) { out = _customL; }
 void getFaceRight(FaceShape &out) { out = _customR; }

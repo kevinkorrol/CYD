@@ -18,6 +18,7 @@ static constexpr uint16_t LDR_RAW_DARK   = 800;
 static bool     _initialised     = false;
 static float    _currentEffective = 100.0f;
 static uint32_t _lastTick        = 0;
+static uint8_t  _lastAppliedPct  = 100;
 
 
 uint16_t getLdrRaw() {
@@ -41,7 +42,7 @@ void printLdr() {
 }
 
 void serviceLdr() {
-    if (!config.autoBright) {
+    if (!config.autoBright || !isScreenOn()) {   // held off while screen:off
         _initialised = false;   // reset so re-enable starts fresh
         return;
     }
@@ -49,7 +50,8 @@ void serviceLdr() {
     uint32_t now = millis();
     if (!_initialised) {
         _lastTick = now;
-        _currentEffective = (float)config.brightness;   // start from current
+        _currentEffective = (float)config.brightness;   // start from the setting,
+        _lastAppliedPct = config.brightness;            // which is what the PWM shows
         _initialised = true;
         return;
     }
@@ -85,10 +87,10 @@ void serviceLdr() {
         }
     #endif
 
-    // Only call setBacklight when the integer value actually changes (avoid PWM thrash)
-    static uint8_t lastAppliedPct = 100;
-    if (newPct != lastAppliedPct) {
-        setBacklight(newPct);
-        lastAppliedPct = newPct;
+    // Drive the PWM only, so config.brightness (the saved setting) never drifts.
+    // Only write when the integer value actually changes (avoid PWM thrash).
+    if (newPct != _lastAppliedPct) {
+        writeBacklight(newPct);
+        _lastAppliedPct = newPct;
     }
 }

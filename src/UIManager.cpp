@@ -5,6 +5,7 @@
 #include "FaceRenderer.h"
 #include "MenuApp.h"
 #include <TFT_eSPI.h>
+#include "DisplayInit.h"
 
 extern TFT_eSPI tft;
 
@@ -33,9 +34,29 @@ void initUI() {
     _mode = MODE_FACE;
 }
 
+void setScreenPower(bool on) {
+    if (on) {
+        setScreenOn(true);    // saved brightness back
+        resumeFace();
+    } else {
+        if (_mode == MODE_MENU) exitMenu();   // close the menu
+        pauseFace();
+        setScreenOn(false);   // PWM 0; serviceLdr and touch hold off while dark
+    }
+}
+
 void serviceUI() {
     TouchEvent ev;
     bool gotEvent = pollTouchEvent(ev);
+    // screen:off — keep polling so the press state stays current, but ignore
+    // everything except a long press, which turns the screen back on (the way
+    // back if the host never sends screen:on). It doesn't open the menu: the
+    // press has already fired, so it can't fire again until the finger lifts.
+    // No line is sent; the host doesn't track screen on/off.
+    if (!isScreenOn()) {
+        if (gotEvent && ev.kind == TOUCH_LONG_PRESS) setScreenPower(true);
+        return;
+    }
 
     // Enter menu on long-press from face (one-way)
     if (gotEvent && ev.kind == TOUCH_LONG_PRESS && _mode == MODE_FACE) {

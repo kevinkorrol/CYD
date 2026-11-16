@@ -62,14 +62,16 @@ Animated robot face with on-screen touch menus for the [Cheap Yellow Display](ht
 
 ## Software stack
 
-| Component | Source | Version (tested) |
+Every dependency is pinned in `platformio.ini`; a fresh clone builds the same thing. Keep this table and the pins in step.
+
+| Component | Source | Pinned version |
 |-----------|--------|----------------|
-| PlatformIO platform | espressif32 | 6.4.0 |
-| Arduino core | arduino-esp32 | 2.0.11 |
-| Display driver | [bodmer/TFT_eSPI](https://github.com/Bodmer/TFT_eSPI) | 2.5.43 |
-| Eye animations | [tanmaywankar/Grobot_Animations](https://github.com/tanmaywankar/Grobot_Animations) | 0.1.3 |
-| Touch driver | [hexeguitar/CYD28_Touchscreen](https://github.com/hexeguitar/CYD28_Touchscreen) | bitbang fork |
-| UI framework | [ImpulseAdventure/GUIslice](https://github.com/ImpulseAdventure/GUIslice) | 0.17.2 |
+| PlatformIO platform | espressif32 | `espressif32@6.4.0` |
+| Arduino core | arduino-esp32 | 2.0.11 (comes with the platform) |
+| Display driver | [bodmer/TFT_eSPI](https://github.com/Bodmer/TFT_eSPI) | `2.5.43` |
+| Eye animations | [tanmaywankar/Grobot_Animations](https://github.com/tanmaywankar/Grobot_Animations) | v0.1.3, copied into `lib/Grobot_Animations/` with one addition (`blinkNow()`); see its README. v0.1.4 removed the named moods this firmware uses |
+| Touch driver | [hexeguitar/CYD28_Touchscreen](https://github.com/hexeguitar/CYD28_Touchscreen) | commit `80a2e6e0b6074f77933def3f6326b9ae7c4aa017` (no tags) |
+| UI framework | [ImpulseAdventure/GUIslice](https://github.com/ImpulseAdventure/GUIslice) | commit `605db3cb26305aa12dce0af35716dc8589728a17` (`master`, 4 Dec 2025; reports as 0.17.2, newer than the `v0.17.2` tag) |
 | UI layout | GUIslice Builder | 0.17.b41 |
 | NVS | Built-in `Preferences` | — |
 
@@ -89,6 +91,9 @@ src/
   DebugOverlay.cpp   Touch dots, edge detection, diag helpers
   LdrSensor.cpp      LDR sampling + continuous auto-brightness
   LED_Solution.cpp   RGB LED control
+
+lib/
+  Grobot_Animations/ Eye library v0.1.3, vendored (MIT) with blinkNow() added
 
 include/
   test_GSLC.h        GUIslice Builder generated — element creation, page layout, image refs
@@ -168,13 +173,13 @@ Default screen after long-pressing into menu mode.
 | Burger menu button | top-right | Opens burger menu popup |
 | RSC logo | centre-left | Returns to FACE mode |
 | Back arrow | right-middle | Returns to FACE mode |
-| Volume slider | right column | Posts `host_vol:NN` to UART (throttled to ~10 Hz) |
-| Brightness slider | middle column | Sets local backlight via LEDC; broadcasts `bright:NN` (throttled) |
-| Volume mute icon | below volume slider | Posts `host_mute`; icon swaps mute / low / loud based on slider level |
-| Mic icon | below volume mute | Posts `host_mic`; icon swaps active / muted |
-| Auto-brightness icon | below brightness slider | Toggles `auto_bright`; icon swaps manual / auto |
+| Volume slider | right column | Posts `host_vol:NN` to UART (throttled to ~10 Hz; the last value is always sent). The host moves it with `vol:NN` |
+| Brightness slider | middle column | Sets local backlight via LEDC, turns `auto_bright` off; reports `host_bright:NN` (throttled, last value always sent) |
+| Volume mute icon | below volume slider | Posts `host_mute`; icon swaps mute / low / loud. The host sets it with `mute:on\|off` |
+| Mic icon | below volume mute | Posts `host_mic`; icon swaps active / muted. The host sets it with `mic_mute:on\|off` |
+| Auto-brightness icon | below brightness slider | Toggles `auto_bright` (reports `host_auto_bright`); icon swaps manual / auto |
 
-Sliders are inverted: top = max, bottom = min (matches the 180°-flipped enclosure mount).
+Sliders are inverted: top = max, bottom = min (matches the 180°-flipped enclosure mount). The brightness slider follows the saved `bright` (at boot and after `bright:`), and the volume slider follows the shown volume (50 until the host sends `vol:`).
 
 ### Burger menu (`E_PG_BURGER_MENU`)
 
@@ -224,25 +229,27 @@ All commands travel over USB serial at **115200 baud**, newline-terminated.
 
 Type `help` for the full list. `status` prints all current settable values.
 
+A partial line is dropped once the port has been idle for 200 ms, so a stray byte can't glue itself onto the next command.
+
 Boolean values accept any of: `on`/`off`, `true`/`false`, `yes`/`no`, `1`/`0` (case-insensitive).
 
 ### Selected commands
 
 | Command | Form | Example | Notes |
 |---------|------|---------|-------|
-| `mood` | setter+getter | `mood:HAPPY` | NEUTRAL, HAPPY, ANGRY, SAD, EXCITED, ANNOYED, QUESTIONING, IDLE1-3 |
-| `mood_cycle` | toggle | `mood_cycle:on` | Auto-cycle through moods every 5–8 s |
-| `idle_anim` | toggle | `idle_anim:on` | Random IDLE1/2/3 every 5–15 s when `mood_cycle` is off |
+| `mood` | setter+getter | `mood:HAPPY` | NEUTRAL, HAPPY, ANGRY, SAD, EXCITED, ANNOYED, QUESTIONING, IDLE1-3. Saved; `mood?` returns the saved mood, not what cycling or the idle animation is showing |
+| `mood_cycle` | toggle | `mood_cycle:on` | Auto-cycle through moods every 5–8 s, in the order above |
+| `idle_anim` | toggle | `idle_anim:on` | Random IDLE1/2/3 every 5–15 s when `mood_cycle` is off; doesn't change the saved mood |
 | `theme` | setter+getter | `theme:dark` | `light` (white bg / black eyes) or `dark` (black bg / white eyes) |
 | `face` | setter+getter | `face:0,50,0,30,45` | Symmetric custom mood: topH,botH,tilt,pR,r |
 | `face_l` / `face_r` | setter+getter | `face_l:0,30,0,30,45` | Per-eye asymmetric override |
 | `look` | setter+getter | `look:30,-20` | Canvas offset (eye gaze direction) |
-| `blink` | action | `blink` | Manual blink |
+| `blink` | action | `blink` | Blink now |
 | `hud` | toggle | `hud:on` | FPS overlay (Grobot built-in) |
 | `eye_colour` / `bg_colour` | setters | `eye_colour:00FF00` | RGB565, 6 hex digits; aliases `eye_color` / `bg_color` |
-| `bright` | setter+getter | `bright:50` | Manual backlight 1–100 % |
-| `auto_bright` | toggle | `auto_bright:on` | LDR-driven |
-| `bright_light` / `bright_dark` | setters | `bright_dark:1` | Auto-brightness endpoints (0–100 %) |
+| `bright` | setter+getter | `bright:50` | Manual backlight 1–100 %, saved. Turns `auto_bright` off |
+| `auto_bright` | toggle | `auto_bright:on` | LDR-driven. Drives the backlight without changing `bright`; turning it off goes back to `bright` |
+| `bright_light` / `bright_dark` | setters | `bright_dark:1` | Auto-brightness endpoints (1–100 %) |
 | `menu_timeout` | setter+getter | `menu_timeout:30` | Idle timeout in seconds (0 = disabled) |
 | `touch_debug` | toggle | `touch_debug:on` | State-transition debug logging on touch events |
 | `touch_dots` | toggle | `touch_dots:on` | Visual touch dots on screen |
@@ -251,7 +258,11 @@ Boolean values accept any of: `on`/`off`, `true`/`false`, `yes`/`no`, `1`/`0` (c
 | `splash` | action | — | Re-show "RSC-CYD" splash |
 | `tap` | action | `tap:160,120,1500` | Inject synthetic touch (debugging) |
 | `led` | setter | `led:cyan` | RGB LED: off/on/red/green/blue/white/yellow/cyan/magenta or `r,g,b` |
-| `mode` | setter+getter | `mode:MENU` | FACE / MENU; long-press is the touch-side equivalent |
+| `mode` | setter+getter | `mode:MENU` | FACE / MENU; long-press is the touch-side equivalent. `mode:MENU` answers `ERR: screen is off` while `screen:off` |
+| `vol` | setter+getter | `vol:40` | 0–100, host volume shown on the slider. Display only, not saved |
+| `mute` / `mic_mute` | setter+getter | `mic_mute:on` | Host speaker / mic mute shown on the icons (`on` = muted). Display only, not saved |
+| `screen` | setter+getter | `screen:off` | Backlight off, face paused, touch ignored, menu closed, auto-brightness held. Not saved; boots on. A long press while dark turns it back on (without opening the menu), so the panel isn't dead if the host never sends `screen:on` |
+| `report` | action | `report` | Sends the four report lines (see below), then `OK` |
 | `menu` | action | `menu` | Print current menu state |
 | `menu_back` | action | — | Exit menu (returns to FACE) |
 | `mem` / `uptime` / `version` | actions | — | Diagnostics |
@@ -272,17 +283,33 @@ echo "status" > /dev/ttyUSB0
 
 ## Host serial contract
 
-When the user interacts with on-screen widgets whose state lives on the host (volume, mute, mic, power), the firmware emits short uppercase-namespaced messages over UART. A host service is expected to consume these.
+The host daemon (rsc-host) reads every line starting with `host_` and ignores the rest, apart from the reply to its `vol?` probe. The host owns volume, mute and mic mute (the mixer is on the Pi); the screen owns the face, cycling and brightness and reports them.
+
+**Requests, screen → host.** The host acts on these.
 
 | Message | Trigger | Notes |
 |---|---|---|
-| `host_vol:NN` | Volume slider drag | NN in 0–100; throttled to ~10 Hz during drag |
-| `host_mute` | Volume mute icon tap | Idempotent toggle request; CYD does not track audio mute state |
-| `host_mic` | Mic icon tap | Idempotent toggle request; CYD does not track mic state |
+| `host_vol:NN` | Volume slider drag | NN in 0–100; throttled to ~10 Hz, and the last value is always sent |
+| `host_mute` | Volume mute icon tap | Toggle request. The screen flips its icon at once; the host's `mute:` push corrects it |
+| `host_mic` | Mic icon tap | Toggle request. Same as `host_mute`, corrected by `mic_mute:` |
 | `host_reboot` | Pi Reboot menu button | Recoverable; no confirmation needed |
 | `host_poweroff` | Pi Poweroff menu button | Confirmed through the Yes/Cancel popup before emission |
 
-The CYD does not parse these messages back, so a host that echoes them won't loop.
+**Reports, screen → host.** The host only records these and never answers them.
+
+| Message | Sent when |
+|---|---|
+| `host_ready` | At the end of start-up, followed by a full report |
+| `host_face:MOOD` | The face shown changes: `mood:`, cycling, the idle animation, and in every report. One of the 10 mood names, or `CUSTOM` after `face` / `face_l` / `face_r` |
+| `host_cycle:on\|off` | `mood_cycle:` is set, and in every report |
+| `host_bright:NN` | The brightness setting changes (`bright:` or the slider), and in every report. Not for auto-brightness's continuous changes |
+| `host_auto_bright:on\|off` | It changes (`auto_bright:`, the menu icon, or `bright:` / the slider turning it off), and in every report |
+
+**Host → screen.** `vol:NN` / `vol?`, `mute:on|off` / `mute?`, `mic_mute:on|off` / `mic_mute?`, `screen:on|off` / `screen?` and `report`, as in the command table. The screen tracks volume, mute and mic mute only to draw them; it never saves them.
+
+**No loops.** The screen never sends a `host_*` line in reply to `vol:`, `mute:` or `mic_mute:` (setting the slider from `vol:` is guarded, because GUIslice calls the slider callback on a programmatic move). The host never sends a command in reply to a report line.
+
+**Host start-up.** `vol?`; if the answer starts with `vol:`, then `vol:NN`, `mute:…`, `mic_mute:…`, `screen:on`; then `report`. Firmware without these commands answers `ERR`, which the host ignores.
 
 ---
 
@@ -317,6 +344,12 @@ jobs:
 ```
 
 Once committed under `.github/workflows/build.yml`, the shield will reflect the latest run.
+
+---
+
+## Desk test
+
+`desk_test/run.sh` builds the firmware's own source with plain `g++` against small stand-ins for the hardware and libraries, then checks its serial behaviour scenario by scenario: the boot report, `vol`/`mute`/`mic_mute` never echoing, the slider throttle, moods and cycling, brightness and auto-brightness, `screen:off`/`on`, the line buffer and `report`. It needs only `g++` and doesn't touch the hardware. See [desk_test/README.md](desk_test/README.md). Drawing, touch and real UART timing still need the real screen.
 
 ---
 
