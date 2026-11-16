@@ -6,6 +6,10 @@ enum UIMode : uint8_t { MODE_FACE, MODE_MENU };
 void initUI();
 void serviceUI();
 
+// screen:on|off, also used by a long press while dark. Off closes the menu,
+// pauses the face and writes PWM 0; on restores the saved brightness.
+void setScreenPower(bool on);
+
 UIMode getUIMode();
 void   setUIMode(UIMode m);
 

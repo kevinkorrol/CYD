@@ -226,14 +226,7 @@ static void cmdGetMicMute() { Serial.printf("mic_mute:       %s\n", shownMicMute
 static void cmdSetScreen(const String &val) {
     bool on;
     if (!parseBool(val, on)) { Serial.println("ERR: on|off"); return; }
-    if (on) {
-        setScreenOn(true);    // saved brightness back
-        resumeFace();
-    } else {
-        if (getUIMode() == MODE_MENU) setUIMode(MODE_FACE);   // close the menu
-        pauseFace();
-        setScreenOn(false);   // PWM 0; serviceLdr and touch hold off while dark
-    }
+    setScreenPower(on);
     Serial.println("OK");
 }
 static void cmdGetScreen() { Serial.printf("screen:         %s\n", isScreenOn() ? "on" : "off"); }
@@ -423,7 +416,7 @@ static const Command commands[] = {
     {"vol",          cmdSetVol,         cmdGetVol,         "0-100 host volume, display only (host owns the mixer)"},
     {"mute",         cmdSetMute,        cmdGetMute,        "on|off host speaker mute, display only"},
     {"mic_mute",     cmdSetMicMute,     cmdGetMicMute,     "on|off host mic mute (on = muted), display only"},
-    {"screen",       cmdSetScreen,      cmdGetScreen,      "on|off backlight + face + touch (not saved; boots on)"},
+    {"screen",       cmdSetScreen,      cmdGetScreen,      "on|off backlight + face + touch (not saved; boots on; a long press turns it on)"},
 
     // Set-only commands
     {"led",          cmdSetLed,         nullptr,           "off|on|red|green|blue|white|yellow|cyan|magenta or r,g,b"},
@@ -552,10 +545,23 @@ static void parseLine(const String &raw) {
 }
 
 // ============ Non-blocking line reader ============
+// A partial line is dropped once the port has been seen idle for LINE_IDLE_MS
+// after its last byte, so a stray byte (line noise, a half-sent command when
+// the host restarted) can't glue itself onto the next command. Idle means
+// "nothing available when we looked": a loop() that stalled while bytes kept
+// arriving doesn't count.
+static const uint32_t LINE_IDLE_MS = 200;
+
 void serviceConfig() {
     static String buffer;
+    static uint32_t lastByteMs = 0;
+    if (!Serial.available()) {
+        if (buffer.length() > 0 && millis() - lastByteMs >= LINE_IDLE_MS) buffer = "";
+        return;
+    }
     while (Serial.available()) {
         char c = Serial.read();
+        lastByteMs = millis();
         if (c == '\n' || c == '\r') {
             if (buffer.length() > 0) {
                 parseLine(buffer);

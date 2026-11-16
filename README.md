@@ -229,6 +229,8 @@ All commands travel over USB serial at **115200 baud**, newline-terminated.
 
 Type `help` for the full list. `status` prints all current settable values.
 
+A partial line is dropped once the port has been idle for 200 ms, so a stray byte can't glue itself onto the next command.
+
 Boolean values accept any of: `on`/`off`, `true`/`false`, `yes`/`no`, `1`/`0` (case-insensitive).
 
 ### Selected commands
@@ -259,7 +261,7 @@ Boolean values accept any of: `on`/`off`, `true`/`false`, `yes`/`no`, `1`/`0` (c
 | `mode` | setter+getter | `mode:MENU` | FACE / MENU; long-press is the touch-side equivalent. `mode:MENU` answers `ERR: screen is off` while `screen:off` |
 | `vol` | setter+getter | `vol:40` | 0–100, host volume shown on the slider. Display only, not saved |
 | `mute` / `mic_mute` | setter+getter | `mic_mute:on` | Host speaker / mic mute shown on the icons (`on` = muted). Display only, not saved |
-| `screen` | setter+getter | `screen:off` | Backlight off, face paused, touch ignored, menu closed, auto-brightness held. Not saved; boots on |
+| `screen` | setter+getter | `screen:off` | Backlight off, face paused, touch ignored, menu closed, auto-brightness held. Not saved; boots on. A long press while dark turns it back on (without opening the menu), so the panel isn't dead if the host never sends `screen:on` |
 | `report` | action | `report` | Sends the four report lines (see below), then `OK` |
 | `menu` | action | `menu` | Print current menu state |
 | `menu_back` | action | — | Exit menu (returns to FACE) |
@@ -342,6 +344,12 @@ jobs:
 ```
 
 Once committed under `.github/workflows/build.yml`, the shield will reflect the latest run.
+
+---
+
+## Desk test
+
+`desk_test/run.sh` builds the firmware's own source with plain `g++` against small stand-ins for the hardware and libraries, then checks its serial behaviour scenario by scenario: the boot report, `vol`/`mute`/`mic_mute` never echoing, the slider throttle, moods and cycling, brightness and auto-brightness, `screen:off`/`on`, the line buffer and `report`. It needs only `g++` and doesn't touch the hardware. See [desk_test/README.md](desk_test/README.md). Drawing, touch and real UART timing still need the real screen.
 
 ---
 
